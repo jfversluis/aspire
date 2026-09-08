@@ -14,6 +14,12 @@ namespace Aspire.Hosting.Maui.Utilities;
 internal sealed class AndroidSdkChecker : IMauiPrerequisiteChecker
 {
     private static readonly TimeSpan s_timeout = TimeSpan.FromSeconds(30);
+    private static readonly IReadOnlyDictionary<string, string> s_dotNetProbeEnvironmentVariables = new Dictionary<string, string>
+    {
+        [KnownConfigNames.DotnetCliTelemetryOptOut] = "1",
+        [KnownConfigNames.DotnetCliWorkloadUpdateNotifyDisable] = "1"
+    };
+
     private readonly Func<IResource, ILogger, CancellationToken, Task<string?>> _getConfiguredSdkPathAsync;
     private readonly Func<string?> _findSdkPath;
     private readonly Func<string, bool> _hasAdbTool;
@@ -229,7 +235,13 @@ internal sealed class AndroidSdkChecker : IMauiPrerequisiteChecker
         try
         {
             // Use PATH-resolved `dotnet` to match project evaluation, the serialized build, and DCP launch.
-            result = await processRunner.RunAsync("dotnet", args, buildInfo.WorkingDirectory, s_timeout, cancellationToken).ConfigureAwait(false);
+            result = await processRunner.RunAsync(
+                "dotnet",
+                args,
+                buildInfo.WorkingDirectory,
+                s_timeout,
+                s_dotNetProbeEnvironmentVariables,
+                cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -263,15 +275,33 @@ internal sealed class AndroidSdkChecker : IMauiPrerequisiteChecker
             return null;
         }
 
+        // A single-property probe emits the raw value:
+        //   /Users/example/Library/Android/sdk
+        // Multiple-property probes emit JSON:
+        //   { "Properties": { "AndroidSdkDirectory": "/Users/example/Library/Android/sdk" } }
+        // Treat any other multiline stdout as non-machine-readable output so first-run or workload
+        // notifications cannot be mistaken for part of the SDK path.
         if (trimmed[0] == '{')
         {
-            using var document = JsonDocument.Parse(trimmed);
-            if (document.RootElement.TryGetProperty("Properties", out var properties) &&
-                properties.TryGetProperty(KnownMauiMSBuildProperties.AndroidSdkDirectory, out var androidSdkDirectory))
+            try
             {
-                return NormalizeSdkPath(androidSdkDirectory.GetString());
-            }
+                using var document = JsonDocument.Parse(trimmed);
+                if (document.RootElement.TryGetProperty("Properties", out var properties) &&
+                    properties.TryGetProperty(KnownMauiMSBuildProperties.AndroidSdkDirectory, out var androidSdkDirectory))
+                {
+                    return NormalizeSdkPath(androidSdkDirectory.GetString());
+                }
 
+                return null;
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
+        }
+
+        if (trimmed.Contains('\n') || trimmed.Contains('\r'))
+        {
             return null;
         }
 

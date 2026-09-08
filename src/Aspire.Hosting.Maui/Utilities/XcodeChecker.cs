@@ -42,7 +42,13 @@ internal sealed class XcodeChecker(
         ProcessResult result;
         try
         {
-            result = await processRunner.RunAsync("xcode-select", ["-p"], workingDirectory: null, s_timeout, cancellationToken).ConfigureAwait(false);
+            result = await processRunner.RunAsync(
+                "xcode-select",
+                ["-p"],
+                workingDirectory: null,
+                s_timeout,
+                environmentVariables: null,
+                cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {

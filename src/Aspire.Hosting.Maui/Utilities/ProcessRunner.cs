@@ -7,7 +7,13 @@ namespace Aspire.Hosting.Maui.Utilities;
 
 internal interface IProcessRunner
 {
-    Task<ProcessResult> RunAsync(string fileName, IReadOnlyList<string> arguments, string? workingDirectory, TimeSpan timeout, CancellationToken cancellationToken);
+    Task<ProcessResult> RunAsync(
+        string fileName,
+        IReadOnlyList<string> arguments,
+        string? workingDirectory,
+        TimeSpan timeout,
+        IReadOnlyDictionary<string, string>? environmentVariables,
+        CancellationToken cancellationToken);
 }
 
 internal sealed record ProcessResult(int ExitCode, string StandardOutput, string StandardError);
@@ -16,7 +22,13 @@ internal sealed class ProcessRunner : IProcessRunner
 {
     private static readonly TimeSpan s_outputDrainTimeout = TimeSpan.FromSeconds(5);
 
-    public async Task<ProcessResult> RunAsync(string fileName, IReadOnlyList<string> arguments, string? workingDirectory, TimeSpan timeout, CancellationToken cancellationToken)
+    public async Task<ProcessResult> RunAsync(
+        string fileName,
+        IReadOnlyList<string> arguments,
+        string? workingDirectory,
+        TimeSpan timeout,
+        IReadOnlyDictionary<string, string>? environmentVariables,
+        CancellationToken cancellationToken)
     {
         var psi = new ProcessStartInfo(fileName)
         {
@@ -30,6 +42,14 @@ internal sealed class ProcessRunner : IProcessRunner
         foreach (var argument in arguments)
         {
             psi.ArgumentList.Add(argument);
+        }
+
+        if (environmentVariables is not null)
+        {
+            foreach (var (key, value) in environmentVariables)
+            {
+                psi.Environment[key] = value;
+            }
         }
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

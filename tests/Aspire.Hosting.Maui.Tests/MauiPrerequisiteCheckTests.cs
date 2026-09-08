@@ -182,6 +182,18 @@ public class MauiPrerequisiteCheckTests
             arg => Assert.Equal("-p:Configuration=Debug", arg),
             arg => Assert.Equal("-getProperty:AndroidSdkDirectory", arg),
             arg => Assert.Equal("-nologo", arg));
+        Assert.Collection(
+            checkerProcessRunner.EnvironmentVariables.OrderBy(static pair => pair.Key, StringComparer.Ordinal),
+            pair =>
+            {
+                Assert.Equal(KnownConfigNames.DotnetCliTelemetryOptOut, pair.Key);
+                Assert.Equal("1", pair.Value);
+            },
+            pair =>
+            {
+                Assert.Equal(KnownConfigNames.DotnetCliWorkloadUpdateNotifyDisable, pair.Key);
+                Assert.Equal("1", pair.Value);
+            });
     }
 
     [Fact]
@@ -244,6 +256,20 @@ public class MauiPrerequisiteCheckTests
 
         Assert.False(result.IsAvailable);
         Assert.Contains("Android emulator tool", result.Details);
+    }
+
+    [Fact]
+    public void AndroidSdkChecker_ParseAndroidSdkDirectoryIgnoresMultilineOutput()
+    {
+        var sdkPath = OperatingSystem.IsWindows() ? @"C:\android-sdk" : "/android-sdk";
+        var output = $"""
+            Workload updates are available. Run `dotnet workload list` for more information.
+            {sdkPath}
+            """;
+
+        var result = AndroidSdkChecker.ParseAndroidSdkDirectory(output);
+
+        Assert.Null(result);
     }
 
     [Fact]
@@ -637,6 +663,18 @@ public class MauiPrerequisiteCheckTests
         await checker.CheckAsync(resource, NullLogger.Instance, CancellationToken.None);
 
         Assert.Equal("dotnet", processRunner.FileName);
+        Assert.Collection(
+            processRunner.EnvironmentVariables.OrderBy(static pair => pair.Key, StringComparer.Ordinal),
+            pair =>
+            {
+                Assert.Equal(KnownConfigNames.DotnetCliTelemetryOptOut, pair.Key);
+                Assert.Equal("1", pair.Value);
+            },
+            pair =>
+            {
+                Assert.Equal(KnownConfigNames.DotnetCliWorkloadUpdateNotifyDisable, pair.Key);
+                Assert.Equal("1", pair.Value);
+            });
     }
 
     [Fact]
@@ -663,6 +701,7 @@ public class MauiPrerequisiteCheckTests
                 arguments,
                 workingDirectory: null,
                 timeout: TimeSpan.FromMilliseconds(500),
+                environmentVariables: null,
                 cancellationToken: CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(15)));
 
         Assert.Contains("did not complete within", exception.Message);
@@ -891,13 +930,22 @@ public class MauiPrerequisiteCheckTests
 
         public IReadOnlyList<string> Arguments { get; private set; } = [];
 
+        public IReadOnlyDictionary<string, string> EnvironmentVariables { get; private set; } = new Dictionary<string, string>();
+
         public string? WorkingDirectory { get; private set; }
 
-        public Task<ProcessResult> RunAsync(string fileName, IReadOnlyList<string> arguments, string? workingDirectory, TimeSpan timeout, CancellationToken cancellationToken)
+        public Task<ProcessResult> RunAsync(
+            string fileName,
+            IReadOnlyList<string> arguments,
+            string? workingDirectory,
+            TimeSpan timeout,
+            IReadOnlyDictionary<string, string>? environmentVariables,
+            CancellationToken cancellationToken)
         {
             Interlocked.Increment(ref _callCount);
             FileName = fileName;
             Arguments = arguments;
+            EnvironmentVariables = environmentVariables ?? new Dictionary<string, string>();
             WorkingDirectory = workingDirectory;
             return AsyncCallback is not null ? AsyncCallback(arguments) : Task.FromResult(_callback(arguments));
         }

@@ -14,6 +14,12 @@ namespace Aspire.Hosting.Maui.Utilities;
 internal sealed class MauiWorkloadChecker(IProcessRunner processRunner) : IMauiPrerequisiteChecker
 {
     private static readonly TimeSpan s_timeout = TimeSpan.FromSeconds(30);
+    private static readonly IReadOnlyDictionary<string, string> s_dotNetProbeEnvironmentVariables = new Dictionary<string, string>
+    {
+        [KnownConfigNames.DotnetCliTelemetryOptOut] = "1",
+        [KnownConfigNames.DotnetCliWorkloadUpdateNotifyDisable] = "1"
+    };
+
     private readonly ConcurrentDictionary<string, Lazy<Task<ProcessResult>>> _workloadListTasks = new(StringComparer.Ordinal);
 
     public string Name => ".NET MAUI workload";
@@ -81,6 +87,7 @@ internal sealed class MauiWorkloadChecker(IProcessRunner processRunner) : IMauiP
                 ["workload", "list"],
                 GetWorkingDirectory(resource),
                 s_timeout,
+                s_dotNetProbeEnvironmentVariables,
                 CancellationToken.None).ConfigureAwait(false);
         }
         finally
