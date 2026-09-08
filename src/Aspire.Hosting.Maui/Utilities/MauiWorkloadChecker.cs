@@ -2,7 +2,6 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Collections.Concurrent;
-using System.Runtime.InteropServices;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Maui.Annotations;
 using Microsoft.Extensions.Logging;
@@ -166,36 +165,9 @@ internal sealed class MauiWorkloadChecker(IProcessRunner processRunner) : IMauiP
 
     private static string GetDotNetExecutable()
     {
-        return ResolveDotNetExecutable(Environment.GetEnvironmentVariable, File.Exists);
-    }
-
-    internal static string ResolveDotNetExecutable(Func<string, string?> getEnvironmentVariable, Func<string, bool> fileExists)
-    {
-        // Prefer the same dotnet host that launched the AppHost when the SDK provides it.
-        // See https://learn.microsoft.com/dotnet/core/tools/dotnet-environment-variables#dotnet_host_path.
-        if (getEnvironmentVariable("DOTNET_HOST_PATH") is { Length: > 0 } dotnetHostPath && fileExists(dotnetHostPath))
-        {
-            return dotnetHostPath;
-        }
-
-        // AppHosts can also be launched through a repo-local SDK. In that case the running process is
-        // the built AppHost executable, not dotnet, but the host sets DOTNET_ROOT_<ARCH> to the SDK that
-        // launched it. Prefer that SDK so workload checks match the user's actual AppHost toolchain.
-        var architecture = RuntimeInformation.ProcessArchitecture.ToString().ToUpperInvariant();
-        foreach (var environmentVariableName in new[] { $"DOTNET_ROOT_{architecture}", "DOTNET_ROOT" })
-        {
-            if (getEnvironmentVariable(environmentVariableName) is not { Length: > 0 } dotnetRoot)
-            {
-                continue;
-            }
-
-            var candidate = Path.Combine(dotnetRoot, OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet");
-            if (fileExists(candidate))
-            {
-                return candidate;
-            }
-        }
-
+        // Match ProjectFileReader, MauiBuildQueueEventSubscriber, and DCP launch, which all use
+        // PATH-resolved `dotnet`. Workloads are installed per .NET root, so checking a different
+        // DOTNET_HOST_PATH/DOTNET_ROOT host can report prerequisites for a toolchain that won't build.
         return "dotnet";
     }
 }

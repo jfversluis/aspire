@@ -3,7 +3,6 @@
 
 #pragma warning disable ASPIREINTERACTION001 // IInteractionService is experimental
 
-using System.Runtime.InteropServices;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Maui.Annotations;
 using Aspire.Hosting.Eventing;
@@ -154,6 +153,131 @@ public class MauiPrerequisiteCheckTests
 
         Assert.False(result.IsAvailable);
         Assert.Contains("Android emulator tool", result.Details);
+    }
+
+    [Fact]
+    public async Task AndroidSdkChecker_UsesProjectConfiguredAndroidSdkDirectory()
+    {
+        var configuredSdkPath = OperatingSystem.IsWindows() ? @"C:\android-sdk" : "/android-sdk";
+        var checkerProcessRunner = new FakeProcessRunner(_ => new ProcessResult(0, configuredSdkPath, ""));
+        var checker = new AndroidSdkChecker(
+            checkerProcessRunner,
+            getConfiguredSdkPathAsync: null,
+            findSdkPath: () => null,
+            hasAdbTool: path => string.Equals(path, configuredSdkPath, StringComparison.Ordinal),
+            hasEmulatorTool: _ => true);
+        var resource = new MauiAndroidDeviceResource("android-device", new MauiProjectResource("app", "/repo/src/MauiApp/MauiApp.csproj"));
+        resource.Annotations.Add(new MauiBuildInfoAnnotation("/repo/src/MauiApp/MauiApp.csproj", "/repo/src/MauiApp", "net10.0-android", "Debug"));
+
+        var result = await checker.CheckAsync(resource, NullLogger.Instance, CancellationToken.None);
+
+        Assert.True(result.IsAvailable);
+        Assert.Equal("dotnet", checkerProcessRunner.FileName);
+        Assert.Equal("/repo/src/MauiApp", checkerProcessRunner.WorkingDirectory);
+        Assert.Collection(
+            checkerProcessRunner.Arguments,
+            arg => Assert.Equal("msbuild", arg),
+            arg => Assert.Equal("/repo/src/MauiApp/MauiApp.csproj", arg),
+            arg => Assert.Equal("-p:TargetFramework=net10.0-android", arg),
+            arg => Assert.Equal("-p:Configuration=Debug", arg),
+            arg => Assert.Equal("-getProperty:AndroidSdkDirectory", arg),
+            arg => Assert.Equal("-nologo", arg));
+    }
+
+    [Fact]
+    public async Task AndroidSdkChecker_ProjectConfiguredAndroidSdkDirectoryMustContainExecutableAdb()
+    {
+        var configuredSdkPath = OperatingSystem.IsWindows() ? @"C:\android-sdk" : "/android-sdk";
+        var checker = new AndroidSdkChecker(
+            new FakeProcessRunner(_ => new ProcessResult(0, configuredSdkPath, "")),
+            getConfiguredSdkPathAsync: null,
+            findSdkPath: () => throw new InvalidOperationException("Global SDK lookup should not be used when AndroidSdkDirectory is configured."),
+            hasAdbTool: _ => false,
+            hasEmulatorTool: _ => true);
+        var resource = new MauiAndroidDeviceResource("android-device", new MauiProjectResource("app", "/repo/src/MauiApp/MauiApp.csproj"));
+        resource.Annotations.Add(new MauiBuildInfoAnnotation("/repo/src/MauiApp/MauiApp.csproj", "/repo/src/MauiApp", "net10.0-android"));
+
+        var result = await checker.CheckAsync(resource, NullLogger.Instance, CancellationToken.None);
+
+        Assert.False(result.IsAvailable);
+        Assert.Contains("executable `platform-tools/adb`", result.Details);
+    }
+
+    [Fact]
+    [SkipOnPlatform(TestPlatforms.Windows, "UnixFileMode does not describe Windows ACLs")]
+    public void AndroidSdkChecker_SdkDerivedAdbMustHaveUnixExecuteBit()
+    {
+        var tempDirectory = Directory.CreateTempSubdirectory();
+        try
+        {
+            var platformToolsDirectory = Directory.CreateDirectory(Path.Combine(tempDirectory.FullName, "platform-tools"));
+            var adbPath = Path.Combine(platformToolsDirectory.FullName, "adb");
+            File.WriteAllText(adbPath, string.Empty);
+
+            // CA1416 does not understand SkipOnPlatform, which already keeps this off Windows.
+#pragma warning disable CA1416
+            File.SetUnixFileMode(adbPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+#pragma warning restore CA1416
+
+            Assert.False(AndroidSdkChecker.IsValidSdkPath(tempDirectory.FullName));
+        }
+        finally
+        {
+            tempDirectory.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AndroidSdkChecker_ProjectConfiguredAndroidSdkDirectoryMustContainEmulatorForEmulatorResource()
+    {
+        var configuredSdkPath = OperatingSystem.IsWindows() ? @"C:\android-sdk" : "/android-sdk";
+        var checker = new AndroidSdkChecker(
+            new FakeProcessRunner(_ => new ProcessResult(0, configuredSdkPath, "")),
+            getConfiguredSdkPathAsync: null,
+            findSdkPath: () => throw new InvalidOperationException("Global SDK lookup should not be used when AndroidSdkDirectory is configured."),
+            hasAdbTool: _ => true,
+            hasEmulatorTool: _ => false);
+        var resource = new MauiAndroidEmulatorResource("android-emulator", new MauiProjectResource("app", "/repo/src/MauiApp/MauiApp.csproj"));
+        resource.Annotations.Add(new MauiBuildInfoAnnotation("/repo/src/MauiApp/MauiApp.csproj", "/repo/src/MauiApp", "net10.0-android"));
+
+        var result = await checker.CheckAsync(resource, NullLogger.Instance, CancellationToken.None);
+
+        Assert.False(result.IsAvailable);
+        Assert.Contains("Android emulator tool", result.Details);
+    }
+
+    [Fact]
+    public async Task AndroidSdkChecker_SuccessfulConfiguredSdkCheckDoesNotSkipSamePlatformResourceFromDifferentProject()
+    {
+        var firstProjectPath = "/repo/src/FirstMauiApp/FirstMauiApp.csproj";
+        var secondProjectPath = "/repo/src/SecondMauiApp/SecondMauiApp.csproj";
+        var firstSdkPath = OperatingSystem.IsWindows() ? @"C:\first-android-sdk" : "/first-android-sdk";
+        var secondSdkPath = OperatingSystem.IsWindows() ? @"C:\second-android-sdk" : "/second-android-sdk";
+        var processRunner = new FakeProcessRunner(args =>
+        {
+            return args[1] switch
+            {
+                var projectPath when string.Equals(projectPath, firstProjectPath, StringComparison.Ordinal) => new ProcessResult(0, firstSdkPath, ""),
+                var projectPath when string.Equals(projectPath, secondProjectPath, StringComparison.Ordinal) => new ProcessResult(0, secondSdkPath, ""),
+                _ => throw new InvalidOperationException("Unexpected project path.")
+            };
+        });
+        var checker = new AndroidSdkChecker(
+            processRunner,
+            getConfiguredSdkPathAsync: null,
+            findSdkPath: () => null,
+            hasAdbTool: path => string.Equals(path, firstSdkPath, StringComparison.Ordinal),
+            hasEmulatorTool: _ => true);
+        await using var env = await PrerequisiteTestEnvironment.CreateAsync([checker]);
+        env.Android.Annotations.Add(new MauiBuildInfoAnnotation(firstProjectPath, Path.GetDirectoryName(firstProjectPath)!, "net10.0-android"));
+        env.AndroidFromSecondProject.Annotations.Add(new MauiBuildInfoAnnotation(secondProjectPath, Path.GetDirectoryName(secondProjectPath)!, "net10.0-android"));
+
+        await env.PublishBeforeResourceStartedAsync(env.Android);
+        var exception = await Assert.ThrowsAsync<DistributedApplicationException>(
+            () => env.PublishBeforeResourceStartedAsync(env.AndroidFromSecondProject));
+
+        Assert.Contains("executable `platform-tools/adb`", exception.Message);
+        Assert.Equal(2, processRunner.CallCount);
     }
 
     [Fact]
@@ -500,29 +624,19 @@ public class MauiPrerequisiteCheckTests
     }
 
     [Fact]
-    public void WorkloadChecker_PrefersDotNetHostPathWhenAvailable()
+    public async Task WorkloadChecker_UsesPathResolvedDotNetToMatchBuildAndLaunch()
     {
-        var dotnetHostPath = OperatingSystem.IsWindows() ? @"C:\Program Files\dotnet\dotnet.exe" : "/usr/local/share/dotnet/dotnet";
+        var processRunner = new FakeProcessRunner(_ => new ProcessResult(0, """
+            Installed Workload Id      Manifest Version       Installation Source
+            --------------------------------------------------------------------
+            maui                       10.0.0/10.0.100        SDK 10.0.100
+            """, ""));
+        var resource = new MauiAndroidEmulatorResource("android", new MauiProjectResource("app", "app.csproj"));
+        var checker = new MauiWorkloadChecker(processRunner);
 
-        var dotnetPath = MauiWorkloadChecker.ResolveDotNetExecutable(
-            name => string.Equals(name, "DOTNET_HOST_PATH", StringComparison.Ordinal) ? dotnetHostPath : null,
-            path => string.Equals(path, dotnetHostPath, StringComparison.Ordinal));
+        await checker.CheckAsync(resource, NullLogger.Instance, CancellationToken.None);
 
-        Assert.Equal(dotnetHostPath, dotnetPath);
-    }
-
-    [Fact]
-    public void WorkloadChecker_PrefersDotNetRootForCurrentArchitecture()
-    {
-        var architecture = RuntimeInformation.ProcessArchitecture.ToString().ToUpperInvariant();
-        var dotnetRoot = OperatingSystem.IsWindows() ? @"C:\repo\.dotnet" : "/repo/.dotnet";
-        var expectedDotNetPath = Path.Combine(dotnetRoot, OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet");
-
-        var dotnetPath = MauiWorkloadChecker.ResolveDotNetExecutable(
-            name => string.Equals(name, $"DOTNET_ROOT_{architecture}", StringComparison.Ordinal) ? dotnetRoot : null,
-            path => string.Equals(path, expectedDotNetPath, StringComparison.Ordinal));
-
-        Assert.Equal(expectedDotNetPath, dotnetPath);
+        Assert.Equal("dotnet", processRunner.FileName);
     }
 
     [Fact]
@@ -773,11 +887,17 @@ public class MauiPrerequisiteCheckTests
 
         public int CallCount => _callCount;
 
+        public string? FileName { get; private set; }
+
+        public IReadOnlyList<string> Arguments { get; private set; } = [];
+
         public string? WorkingDirectory { get; private set; }
 
         public Task<ProcessResult> RunAsync(string fileName, IReadOnlyList<string> arguments, string? workingDirectory, TimeSpan timeout, CancellationToken cancellationToken)
         {
             Interlocked.Increment(ref _callCount);
+            FileName = fileName;
+            Arguments = arguments;
             WorkingDirectory = workingDirectory;
             return AsyncCallback is not null ? AsyncCallback(arguments) : Task.FromResult(_callback(arguments));
         }

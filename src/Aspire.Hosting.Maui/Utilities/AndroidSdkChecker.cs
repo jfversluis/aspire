@@ -1,7 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Text.Json;
 using Aspire.Hosting.ApplicationModel;
+using Aspire.Hosting.Maui.Annotations;
 using Microsoft.Extensions.Logging;
 
 namespace Aspire.Hosting.Maui.Utilities;
@@ -9,13 +11,40 @@ namespace Aspire.Hosting.Maui.Utilities;
 /// <summary>
 /// Checks whether Android SDK tooling required by MAUI Android resources is available.
 /// </summary>
-internal sealed class AndroidSdkChecker(
-    Func<string?> findSdkPath,
-    Func<string, bool> hasEmulatorTool) : IMauiPrerequisiteChecker
+internal sealed class AndroidSdkChecker : IMauiPrerequisiteChecker
 {
+    private static readonly TimeSpan s_timeout = TimeSpan.FromSeconds(30);
+    private readonly Func<IResource, ILogger, CancellationToken, Task<string?>> _getConfiguredSdkPathAsync;
+    private readonly Func<string?> _findSdkPath;
+    private readonly Func<string, bool> _hasAdbTool;
+    private readonly Func<string, bool> _hasEmulatorTool;
+
     public AndroidSdkChecker()
-        : this(FindAndroidSdkPath, HasEmulatorTool)
+        : this(new ProcessRunner())
     {
+    }
+
+    public AndroidSdkChecker(IProcessRunner processRunner)
+        : this(processRunner, getConfiguredSdkPathAsync: null, FindAndroidSdkPath, HasAdbTool, HasEmulatorTool)
+    {
+    }
+
+    internal AndroidSdkChecker(Func<string?> findSdkPath, Func<string, bool> hasEmulatorTool)
+        : this(new ProcessRunner(), (_, _, _) => Task.FromResult<string?>(null), findSdkPath, _ => true, hasEmulatorTool)
+    {
+    }
+
+    internal AndroidSdkChecker(
+        IProcessRunner processRunner,
+        Func<IResource, ILogger, CancellationToken, Task<string?>>? getConfiguredSdkPathAsync,
+        Func<string?> findSdkPath,
+        Func<string, bool> hasAdbTool,
+        Func<string, bool> hasEmulatorTool)
+    {
+        _getConfiguredSdkPathAsync = getConfiguredSdkPathAsync ?? ((resource, logger, cancellationToken) => GetConfiguredAndroidSdkDirectoryAsync(processRunner, resource, logger, cancellationToken));
+        _findSdkPath = findSdkPath;
+        _hasAdbTool = hasAdbTool;
+        _hasEmulatorTool = hasEmulatorTool;
     }
 
     public string Name => "Android SDK";
@@ -28,25 +57,47 @@ internal sealed class AndroidSdkChecker(
 
     public string GetCacheKey(IResource resource)
     {
-        return $"{Name}:{resource.GetType().FullName}";
-    }
-
-    public Task<MauiPrerequisiteCheckResult> CheckAsync(IResource resource, ILogger logger, CancellationToken cancellationToken)
-    {
-        var sdkPath = findSdkPath();
-        if (sdkPath is null)
+        var resourceType = resource.GetType().FullName ?? resource.GetType().Name;
+        if (resource.TryGetLastAnnotation<MauiBuildInfoAnnotation>(out var buildInfo))
         {
-            return Task.FromResult(MauiPrerequisiteCheckResult.Missing("Could not find an Android SDK containing `platform-tools/adb`."));
+            return string.Join('\u001f',
+                Name,
+                resourceType,
+                buildInfo.ProjectPath,
+                buildInfo.WorkingDirectory,
+                buildInfo.TargetFramework ?? string.Empty,
+                buildInfo.Configuration ?? string.Empty,
+                string.Join('\u001e', buildInfo.AdditionalBuildArguments));
         }
 
-        if (resource is MauiAndroidEmulatorResource && !hasEmulatorTool(sdkPath))
+        return resource is IMauiPlatformResource mauiResource
+            ? string.Join('\u001f', Name, resourceType, mauiResource.Parent.ProjectPath)
+            : string.Join('\u001f', Name, resourceType);
+    }
+
+    public async Task<MauiPrerequisiteCheckResult> CheckAsync(IResource resource, ILogger logger, CancellationToken cancellationToken)
+    {
+        var configuredSdkPath = await _getConfiguredSdkPathAsync(resource, logger, cancellationToken).ConfigureAwait(false);
+        var sdkPath = configuredSdkPath ?? _findSdkPath();
+        if (sdkPath is null)
         {
-            return Task.FromResult(MauiPrerequisiteCheckResult.Missing(
-                $"Android SDK was found at '{sdkPath}', but the Android emulator tool was not found. Install the Android Emulator package in Android Studio."));
+            return MauiPrerequisiteCheckResult.Missing("Could not find an Android SDK containing executable `platform-tools/adb`.");
+        }
+
+        if (!_hasAdbTool(sdkPath))
+        {
+            return MauiPrerequisiteCheckResult.Missing(
+                $"Android SDK was found at '{sdkPath}', but executable `platform-tools/adb` was not found.");
+        }
+
+        if (resource is MauiAndroidEmulatorResource && !_hasEmulatorTool(sdkPath))
+        {
+            return MauiPrerequisiteCheckResult.Missing(
+                $"Android SDK was found at '{sdkPath}', but the Android emulator tool was not found. Install the Android Emulator package in Android Studio.");
         }
 
         logger.LogDebug("Android SDK found at '{SdkPath}'.", sdkPath);
-        return Task.FromResult(MauiPrerequisiteCheckResult.Available);
+        return MauiPrerequisiteCheckResult.Available;
     }
 
     internal static string? FindAndroidSdkPath()
@@ -86,13 +137,18 @@ internal sealed class AndroidSdkChecker(
             return false;
         }
 
-        return File.Exists(Path.Combine(sdkPath, "platform-tools", GetExecutableName("adb")));
+        return HasAdbTool(sdkPath);
     }
 
     internal static bool HasEmulatorTool(string sdkPath)
     {
-        return File.Exists(Path.Combine(sdkPath, "emulator", GetExecutableName("emulator"))) ||
+        return FileExistsAndIsExecutable(Path.Combine(sdkPath, "emulator", GetExecutableName("emulator"))) ||
             PathLookupHelper.FindFullPathFromPath("emulator") is not null;
+    }
+
+    internal static bool HasAdbTool(string sdkPath)
+    {
+        return FileExistsAndIsExecutable(Path.Combine(sdkPath, "platform-tools", GetExecutableName("adb")));
     }
 
     internal static IEnumerable<string> GetCandidateSdkPaths()
@@ -147,4 +203,115 @@ internal sealed class AndroidSdkChecker(
         return OperatingSystem.IsWindows() ? $"{name}.exe" : name;
     }
 
+    private static async Task<string?> GetConfiguredAndroidSdkDirectoryAsync(IProcessRunner processRunner, IResource resource, ILogger logger, CancellationToken cancellationToken)
+    {
+        if (!resource.TryGetLastAnnotation<MauiBuildInfoAnnotation>(out var buildInfo))
+        {
+            return null;
+        }
+
+        var args = new List<string> { "msbuild", buildInfo.ProjectPath };
+        if (!string.IsNullOrEmpty(buildInfo.TargetFramework))
+        {
+            args.Add($"-p:{KnownMauiMSBuildProperties.TargetFramework}={buildInfo.TargetFramework}");
+        }
+
+        if (!string.IsNullOrEmpty(buildInfo.Configuration))
+        {
+            args.Add($"-p:Configuration={buildInfo.Configuration}");
+        }
+
+        args.AddRange(buildInfo.AdditionalBuildArguments);
+        args.Add($"-getProperty:{KnownMauiMSBuildProperties.AndroidSdkDirectory}");
+        args.Add("-nologo");
+
+        ProcessResult result;
+        try
+        {
+            // Use PATH-resolved `dotnet` to match project evaluation, the serialized build, and DCP launch.
+            result = await processRunner.RunAsync("dotnet", args, buildInfo.WorkingDirectory, s_timeout, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Unable to evaluate {PropertyName} for MAUI project '{ProjectPath}'.", KnownMauiMSBuildProperties.AndroidSdkDirectory, buildInfo.ProjectPath);
+            return null;
+        }
+
+        if (result.ExitCode != 0)
+        {
+            logger.LogDebug(
+                "Unable to evaluate {PropertyName} for MAUI project '{ProjectPath}'. `dotnet msbuild` exited with code {ExitCode}: {StandardError}",
+                KnownMauiMSBuildProperties.AndroidSdkDirectory,
+                buildInfo.ProjectPath,
+                result.ExitCode,
+                result.StandardError.Trim());
+            return null;
+        }
+
+        return ParseAndroidSdkDirectory(result.StandardOutput);
+    }
+
+    internal static string? ParseAndroidSdkDirectory(string output)
+    {
+        var trimmed = output.Trim();
+        if (trimmed.Length == 0)
+        {
+            return null;
+        }
+
+        if (trimmed[0] == '{')
+        {
+            using var document = JsonDocument.Parse(trimmed);
+            if (document.RootElement.TryGetProperty("Properties", out var properties) &&
+                properties.TryGetProperty(KnownMauiMSBuildProperties.AndroidSdkDirectory, out var androidSdkDirectory))
+            {
+                return NormalizeSdkPath(androidSdkDirectory.GetString());
+            }
+
+            return null;
+        }
+
+        return NormalizeSdkPath(trimmed);
+    }
+
+    private static string? NormalizeSdkPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        return path.Trim().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    }
+
+    private static bool FileExistsAndIsExecutable(string path)
+    {
+        if (!File.Exists(path))
+        {
+            return false;
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            return true;
+        }
+
+        try
+        {
+            const UnixFileMode ExecuteBits = UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute;
+            return (File.GetUnixFileMode(path) & ExecuteBits) != 0;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
 }
