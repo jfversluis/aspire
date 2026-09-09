@@ -23,7 +23,6 @@ internal sealed class AndroidSdkChecker : IMauiPrerequisiteChecker
     private readonly Func<IResource, ILogger, CancellationToken, Task<string?>> _getConfiguredSdkPathAsync;
     private readonly Func<string?> _findSdkPath;
     private readonly Func<string, bool> _hasAdbTool;
-    private readonly Func<string, bool> _hasEmulatorTool;
 
     public AndroidSdkChecker()
         : this(new ProcessRunner())
@@ -31,12 +30,12 @@ internal sealed class AndroidSdkChecker : IMauiPrerequisiteChecker
     }
 
     public AndroidSdkChecker(IProcessRunner processRunner)
-        : this(processRunner, getConfiguredSdkPathAsync: null, FindAndroidSdkPath, HasAdbTool, HasEmulatorTool)
+        : this(processRunner, getConfiguredSdkPathAsync: null, FindAndroidSdkPath, HasAdbTool)
     {
     }
 
-    internal AndroidSdkChecker(Func<string?> findSdkPath, Func<string, bool> hasEmulatorTool)
-        : this(new ProcessRunner(), (_, _, _) => Task.FromResult<string?>(null), findSdkPath, _ => true, hasEmulatorTool)
+    internal AndroidSdkChecker(Func<string?> findSdkPath)
+        : this(new ProcessRunner(), (_, _, _) => Task.FromResult<string?>(null), findSdkPath, _ => true)
     {
     }
 
@@ -44,13 +43,11 @@ internal sealed class AndroidSdkChecker : IMauiPrerequisiteChecker
         IProcessRunner processRunner,
         Func<IResource, ILogger, CancellationToken, Task<string?>>? getConfiguredSdkPathAsync,
         Func<string?> findSdkPath,
-        Func<string, bool> hasAdbTool,
-        Func<string, bool> hasEmulatorTool)
+        Func<string, bool> hasAdbTool)
     {
         _getConfiguredSdkPathAsync = getConfiguredSdkPathAsync ?? ((resource, logger, cancellationToken) => GetConfiguredAndroidSdkDirectoryAsync(processRunner, resource, logger, cancellationToken));
         _findSdkPath = findSdkPath;
         _hasAdbTool = hasAdbTool;
-        _hasEmulatorTool = hasEmulatorTool;
     }
 
     public string Name => "Android SDK";
@@ -96,12 +93,6 @@ internal sealed class AndroidSdkChecker : IMauiPrerequisiteChecker
                 $"Android SDK was found at '{sdkPath}', but executable `platform-tools/adb` was not found.");
         }
 
-        if (resource is MauiAndroidEmulatorResource && !_hasEmulatorTool(sdkPath))
-        {
-            return MauiPrerequisiteCheckResult.Missing(
-                $"Android SDK was found at '{sdkPath}', but the Android emulator tool was not found. Install the Android Emulator package in Android Studio.");
-        }
-
         logger.LogDebug("Android SDK found at '{SdkPath}'.", sdkPath);
         return MauiPrerequisiteCheckResult.Available;
     }
@@ -144,12 +135,6 @@ internal sealed class AndroidSdkChecker : IMauiPrerequisiteChecker
         }
 
         return HasAdbTool(sdkPath);
-    }
-
-    internal static bool HasEmulatorTool(string sdkPath)
-    {
-        return FileExistsAndIsExecutable(Path.Combine(sdkPath, "emulator", GetExecutableName("emulator"))) ||
-            PathLookupHelper.FindFullPathFromPath("emulator") is not null;
     }
 
     internal static bool HasAdbTool(string sdkPath)

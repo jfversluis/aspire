@@ -134,7 +134,7 @@ public class MauiPrerequisiteCheckTests
     [Fact]
     public async Task AndroidSdkChecker_AndroidDeviceRequiresAdbSdk()
     {
-        var checker = new AndroidSdkChecker(findSdkPath: () => null, hasEmulatorTool: _ => true);
+        var checker = new AndroidSdkChecker(findSdkPath: () => null);
         var resource = new MauiAndroidDeviceResource("android-device", new MauiProjectResource("app", "app.csproj"));
 
         var result = await checker.CheckAsync(resource, NullLogger.Instance, CancellationToken.None);
@@ -144,15 +144,18 @@ public class MauiPrerequisiteCheckTests
     }
 
     [Fact]
-    public async Task AndroidSdkChecker_AndroidEmulatorRequiresEmulatorTool()
+    public async Task AndroidSdkChecker_AndroidEmulatorRequiresOnlyAdbSdk()
     {
-        var checker = new AndroidSdkChecker(findSdkPath: () => "/android-sdk", hasEmulatorTool: _ => false);
+        var checker = new AndroidSdkChecker(
+            new FakeProcessRunner(_ => throw new InvalidOperationException("Project-configured SDK lookup should not be used without build info.")),
+            (_, _, _) => Task.FromResult<string?>(null),
+            findSdkPath: () => "/android-sdk",
+            hasAdbTool: _ => true);
         var resource = new MauiAndroidEmulatorResource("android-emulator", new MauiProjectResource("app", "app.csproj"));
 
         var result = await checker.CheckAsync(resource, NullLogger.Instance, CancellationToken.None);
 
-        Assert.False(result.IsAvailable);
-        Assert.Contains("Android emulator tool", result.Details);
+        Assert.True(result.IsAvailable);
     }
 
     [Fact]
@@ -164,8 +167,7 @@ public class MauiPrerequisiteCheckTests
             checkerProcessRunner,
             getConfiguredSdkPathAsync: null,
             findSdkPath: () => null,
-            hasAdbTool: path => string.Equals(path, configuredSdkPath, StringComparison.Ordinal),
-            hasEmulatorTool: _ => true);
+            hasAdbTool: path => string.Equals(path, configuredSdkPath, StringComparison.Ordinal));
         var resource = new MauiAndroidDeviceResource("android-device", new MauiProjectResource("app", "/repo/src/MauiApp/MauiApp.csproj"));
         resource.Annotations.Add(new MauiBuildInfoAnnotation("/repo/src/MauiApp/MauiApp.csproj", "/repo/src/MauiApp", "net10.0-android", "Debug"));
 
@@ -204,8 +206,7 @@ public class MauiPrerequisiteCheckTests
             new FakeProcessRunner(_ => new ProcessResult(0, configuredSdkPath, "")),
             getConfiguredSdkPathAsync: null,
             findSdkPath: () => throw new InvalidOperationException("Global SDK lookup should not be used when AndroidSdkDirectory is configured."),
-            hasAdbTool: _ => false,
-            hasEmulatorTool: _ => true);
+            hasAdbTool: _ => false);
         var resource = new MauiAndroidDeviceResource("android-device", new MauiProjectResource("app", "/repo/src/MauiApp/MauiApp.csproj"));
         resource.Annotations.Add(new MauiBuildInfoAnnotation("/repo/src/MauiApp/MauiApp.csproj", "/repo/src/MauiApp", "net10.0-android"));
 
@@ -237,25 +238,6 @@ public class MauiPrerequisiteCheckTests
         {
             tempDirectory.Delete(recursive: true);
         }
-    }
-
-    [Fact]
-    public async Task AndroidSdkChecker_ProjectConfiguredAndroidSdkDirectoryMustContainEmulatorForEmulatorResource()
-    {
-        var configuredSdkPath = OperatingSystem.IsWindows() ? @"C:\android-sdk" : "/android-sdk";
-        var checker = new AndroidSdkChecker(
-            new FakeProcessRunner(_ => new ProcessResult(0, configuredSdkPath, "")),
-            getConfiguredSdkPathAsync: null,
-            findSdkPath: () => throw new InvalidOperationException("Global SDK lookup should not be used when AndroidSdkDirectory is configured."),
-            hasAdbTool: _ => true,
-            hasEmulatorTool: _ => false);
-        var resource = new MauiAndroidEmulatorResource("android-emulator", new MauiProjectResource("app", "/repo/src/MauiApp/MauiApp.csproj"));
-        resource.Annotations.Add(new MauiBuildInfoAnnotation("/repo/src/MauiApp/MauiApp.csproj", "/repo/src/MauiApp", "net10.0-android"));
-
-        var result = await checker.CheckAsync(resource, NullLogger.Instance, CancellationToken.None);
-
-        Assert.False(result.IsAvailable);
-        Assert.Contains("Android emulator tool", result.Details);
     }
 
     [Fact]
@@ -292,8 +274,7 @@ public class MauiPrerequisiteCheckTests
             processRunner,
             getConfiguredSdkPathAsync: null,
             findSdkPath: () => null,
-            hasAdbTool: path => string.Equals(path, firstSdkPath, StringComparison.Ordinal),
-            hasEmulatorTool: _ => true);
+            hasAdbTool: path => string.Equals(path, firstSdkPath, StringComparison.Ordinal));
         await using var env = await PrerequisiteTestEnvironment.CreateAsync([checker]);
         env.Android.Annotations.Add(new MauiBuildInfoAnnotation(firstProjectPath, Path.GetDirectoryName(firstProjectPath)!, "net10.0-android"));
         env.AndroidFromSecondProject.Annotations.Add(new MauiBuildInfoAnnotation(secondProjectPath, Path.GetDirectoryName(secondProjectPath)!, "net10.0-android"));
