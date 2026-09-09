@@ -132,6 +132,39 @@ public class MauiPrerequisiteCheckTests
     }
 
     [Fact]
+    public void XcodeChecker_StaleXcodeSelectionWithoutPlatformsDirectoryIsNotFullXcode()
+    {
+        var tempDirectory = Directory.CreateTempSubdirectory();
+        try
+        {
+            var staleDeveloperDirectory = Directory.CreateDirectory(Path.Combine(tempDirectory.FullName, "Xcode.app", "Contents", "Developer"));
+
+            Assert.False(XcodeChecker.IsFullXcodePath(staleDeveloperDirectory.FullName));
+        }
+        finally
+        {
+            tempDirectory.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public void XcodeChecker_DeveloperDirectoryWithPlatformsDirectoryIsFullXcode()
+    {
+        var tempDirectory = Directory.CreateTempSubdirectory();
+        try
+        {
+            var developerDirectory = Directory.CreateDirectory(Path.Combine(tempDirectory.FullName, "Xcode.app", "Contents", "Developer"));
+            Directory.CreateDirectory(Path.Combine(developerDirectory.FullName, "Platforms"));
+
+            Assert.True(XcodeChecker.IsFullXcodePath(developerDirectory.FullName));
+        }
+        finally
+        {
+            tempDirectory.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task AndroidSdkChecker_AndroidDeviceRequiresAdbSdk()
     {
         var checker = new AndroidSdkChecker(findSdkPath: () => null);

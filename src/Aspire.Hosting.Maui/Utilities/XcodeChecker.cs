@@ -92,12 +92,6 @@ internal sealed class XcodeChecker(
             return false;
         }
 
-        if (path.Contains("Xcode", StringComparison.OrdinalIgnoreCase) &&
-            path.Contains("Contents/Developer", StringComparison.Ordinal))
-        {
-            return true;
-        }
-
         return Directory.Exists(Path.Combine(path, "Platforms"));
     }
 }
