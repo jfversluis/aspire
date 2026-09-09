@@ -100,10 +100,7 @@ public class MauiWithArgsTests(ITestOutputHelper outputHelper)
 
         var args = await ArgumentEvaluator.GetArgumentListAsync(emulator.Resource);
 
-        Assert.Contains("run", args);
-        Assert.Contains("-f", args);
-        Assert.Contains("net10.0-android", args);
-        Assert.DoesNotContain(args, a => a.Contains("AdbTarget", StringComparison.Ordinal));
+        Assert.Equal(["run", "-f", "net10.0-android"], args);
     }
 
     [Fact]
@@ -119,8 +116,7 @@ public class MauiWithArgsTests(ITestOutputHelper outputHelper)
 
         var args = await ArgumentEvaluator.GetArgumentListAsync(emulator.Resource);
 
-        Assert.Contains("-p:AdbTarget=-s emulator-5554", args);
-        Assert.DoesNotContain("-p:AdbTarget=-e", args);
+        Assert.Equal(["run", "-f", "net10.0-android", "-p:AdbTarget=-s emulator-5554"], args);
     }
 
     [Fact]
@@ -172,11 +168,7 @@ public class MauiWithArgsTests(ITestOutputHelper outputHelper)
 
         var args = await ArgumentEvaluator.GetArgumentListAsync(simulator.Resource);
 
-        Assert.Contains("run", args);
-        Assert.Contains("-f", args);
-        Assert.Contains("net10.0-ios", args);
-        // No device name when no simulator ID specified
-        Assert.DoesNotContain(args, a => a.Contains("_DeviceName"));
+        Assert.Equal(["run", "-f", "net10.0-ios"], args);
     }
 
     [Fact]
@@ -192,9 +184,7 @@ public class MauiWithArgsTests(ITestOutputHelper outputHelper)
 
         var args = await ArgumentEvaluator.GetArgumentListAsync(simulator.Resource);
 
-        Assert.Contains("-p:_DeviceName=:v2:udid=E25BBE37-69BA-4720-B6FD-D54C97791E79", args);
-        // Simulator should NOT have RuntimeIdentifier=ios-arm64 (that's for devices only)
-        Assert.DoesNotContain(args, a => a.Contains("RuntimeIdentifier=ios-arm64"));
+        Assert.Equal(["run", "-f", "net10.0-ios", "-p:_DeviceName=:v2:udid=E25BBE37-69BA-4720-B6FD-D54C97791E79"], args);
     }
 
     [Fact]
